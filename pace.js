@@ -1,11 +1,10 @@
 (function() {
-  var AjaxMonitor, Bar, DocumentMonitor, ElementMonitor, ElementTracker, EventLagMonitor, Events, RequestIntercept, RequestTracker, SOURCE_KEYS, Scaler, animation, bar, cancelAnimation, cancelAnimationFrame, defaultOptions, extend, getOptionsFromDOM, handlePushState, init, intercept, now, options, requestAnimationFrame, result, runAnimation, scalers, sources, uniScaler, _XMLHttpRequest, _pushState, _replaceState,
+  var AjaxMonitor, Bar, DocumentMonitor, ElementMonitor, ElementTracker, EventLagMonitor, Events, RequestIntercept, RequestTracker, SOURCE_KEYS, Scaler, animation, bar, cancelAnimation, cancelAnimationFrame, defaultOptions, extend, getFromDOM, handlePushState, init, intercept, now, options, requestAnimationFrame, result, runAnimation, scalers, sources, uniScaler, _XDomainRequest, _XMLHttpRequest, _pushState, _replaceState,
     __slice = [].slice,
     __hasProp = {}.hasOwnProperty,
     __extends = function(child, parent) { for (var key in parent) { if (__hasProp.call(parent, key)) child[key] = parent[key]; } function ctor() { this.constructor = child; } ctor.prototype = parent.prototype; child.prototype = new ctor(); child.__super__ = parent.prototype; return child; };
 
   defaultOptions = {
-    theme: 'plain',
     catchupTime: 500,
     initialRate: .03,
     minTime: 500,
@@ -81,15 +80,27 @@
     return out;
   };
 
-  getOptionsFromDOM = function() {
+  getFromDOM = function(key, json) {
     var data, e, el;
-    el = document.querySelector('[data-pace-options]');
-    data = el.getAttribute('data-pace-options');
+    if (key == null) {
+      key = 'options';
+    }
+    if (json == null) {
+      json = true;
+    }
+    el = document.querySelector("[data-pace-" + key + "]");
+    if (!el) {
+      return;
+    }
+    data = el.getAttribute("data-pace-" + key);
+    if (!json) {
+      return data;
+    }
     try {
       return JSON.parse(data);
     } catch (_error) {
       e = _error;
-      return console.error("Error parsing inline pace options", e);
+      return typeof console !== "undefined" && console !== null ? console.error("Error parsing inline pace options", e) : void 0;
     }
   };
 
@@ -97,11 +108,7 @@
     window.Pace = {};
   }
 
-  if (Pace.options == null) {
-    Pace.options = {};
-  }
-
-  options = extend(typeof Pace !== "undefined" && Pace !== null ? Pace.options : void 0, getOptionsFromDOM(), defaultOptions);
+  options = Pace.options = extend(defaultOptions, window.paceOptions, getFromDOM());
 
   Bar = (function() {
     function Bar() {
@@ -111,7 +118,7 @@
     Bar.prototype.getElement = function() {
       if (this.el == null) {
         this.el = document.createElement('div');
-        this.el.className = "pace pace-theme-" + options.theme;
+        this.el.className = "pace pace-active";
         this.el.innerHTML = '<div class="pace-progress">\n  <div class="pace-progress-inner"></div>\n</div>\n<div class="pace-activity"></div>';
         if (document.body.firstChild != null) {
           document.body.insertBefore(this.el, document.body.firstChild);
@@ -123,7 +130,10 @@
     };
 
     Bar.prototype.finish = function() {
-      return this.getElement().className += ' pace-done';
+      var el;
+      el = this.getElement();
+      el.className = el.className.replace('pace-active', '');
+      return el.className += ' pace-inactive';
     };
 
     Bar.prototype.update = function(prog) {
@@ -137,12 +147,23 @@
     };
 
     Bar.prototype.render = function() {
+      var el, progressStr;
       if (document.body == null) {
         return false;
       }
-      return $(this.getElement()).find('.pace-progress').css({
-        width: "" + this.progress + "%"
-      });
+      el = this.getElement();
+      el.children[0].style.width = "" + this.progress + "%";
+      if (!this.lastRenderedProgress || this.lastRenderedProgress | 0 !== this.progress | 0) {
+        el.setAttribute('data-progress-text', "" + (this.progress | 0) + "%");
+        if (this.progress >= 100) {
+          progressStr = '99';
+        } else {
+          progressStr = this.progress < 10 ? "0" : "";
+          progressStr += this.progress | 0;
+        }
+        el.setAttribute('data-progress', "" + progressStr);
+      }
+      return this.lastRenderedProgress = this.progress;
     };
 
     Bar.prototype.done = function() {
@@ -185,27 +206,41 @@
 
   _XMLHttpRequest = window.XMLHttpRequest;
 
+  _XDomainRequest = window.XDomainRequest;
+
   RequestIntercept = (function(_super) {
     __extends(RequestIntercept, _super);
 
     function RequestIntercept() {
-      var _intercept;
+      var monitor,
+        _this = this;
       RequestIntercept.__super__.constructor.apply(this, arguments);
-      _intercept = this;
-      window.XMLHttpRequest = function() {
-        var req, _open;
-        req = new _XMLHttpRequest;
+      monitor = function(req) {
+        var _open;
         _open = req.open;
-        req.open = function(type, url, async) {
-          _intercept.trigger('request', {
+        return req.open = function(type, url, async) {
+          _this.trigger('request', {
             type: type,
             url: url,
             request: req
           });
           return _open.apply(req, arguments);
         };
+      };
+      window.XMLHttpRequest = function() {
+        var req;
+        req = new _XMLHttpRequest;
+        monitor(req);
         return req;
       };
+      if (_XDomainRequest != null) {
+        window.XDomainRequest = function() {
+          var req;
+          req = new _XDomainRequest;
+          monitor(req);
+          return req;
+        };
+      }
     }
 
     return RequestIntercept;
@@ -237,7 +272,7 @@
 
   RequestTracker = (function() {
     function RequestTracker(request) {
-      var size, _onprogress, _onreadystatechange,
+      var handler, size, _fn, _i, _len, _onprogress, _onreadystatechange, _ref,
         _this = this;
       this.progress = 0;
       if (request.onprogress !== void 0) {
@@ -270,17 +305,31 @@
         if (typeof _onprogress === "function") {
           _onprogress.apply(null, arguments);
         }
-      }
-      _onreadystatechange = request.onreadystatechange;
-      request.onreadystatechange = function() {
-        var _ref;
-        if ((_ref = request.readyState) === 0 || _ref === 4) {
-          _this.progress = 100;
-        } else if ((request.onprogress == null) && request.readyState === 3) {
-          _this.progress = 50;
+        _ref = ['onload', 'onabort', 'ontimeout', 'onerror'];
+        _fn = function() {
+          var fn;
+          fn = request[handler];
+          return request[handler] = function() {
+            _this.progress = 100;
+            return typeof fn === "function" ? fn.apply(null, arguments) : void 0;
+          };
+        };
+        for (_i = 0, _len = _ref.length; _i < _len; _i++) {
+          handler = _ref[_i];
+          _fn();
         }
-        return typeof _onreadystatechange === "function" ? _onreadystatechange.apply(null, arguments) : void 0;
-      };
+      } else {
+        _onreadystatechange = request.onreadystatechange;
+        request.onreadystatechange = function() {
+          var _ref1;
+          if ((_ref1 = request.readyState) === 0 || _ref1 === 4) {
+            _this.progress = 100;
+          } else if (request.readyState === 3) {
+            _this.progress = 50;
+          }
+          return typeof _onreadystatechange === "function" ? _onreadystatechange.apply(null, arguments) : void 0;
+        };
+      }
     }
 
     return RequestTracker;
@@ -446,19 +495,19 @@
     }
   };
 
-  if (window.pushState != null) {
-    _pushState = window.pushState;
-    window.pushState = function() {
+  if (window.history.pushState != null) {
+    _pushState = window.history.pushState;
+    window.history.pushState = function() {
       handlePushState();
-      return _pushState.apply(null, arguments);
+      return _pushState.apply(window.history, arguments);
     };
   }
 
-  if (window.replaceState != null) {
-    _replaceState = window.replaceState;
-    window.replaceState = function() {
+  if (window.history.replaceState != null) {
+    _replaceState = window.history.replaceState;
+    window.history.replaceState = function() {
       handlePushState();
-      return _replaceState.apply(null, arguments);
+      return _replaceState.apply(window.history, arguments);
     };
   }
 
@@ -470,14 +519,19 @@
   };
 
   (init = function() {
-    var type, _i, _len, _ref, _ref1;
-    sources = (_ref = options.extraSources) != null ? _ref : [];
-    _ref1 = ['ajax', 'elements', 'document', 'eventLag'];
-    for (_i = 0, _len = _ref1.length; _i < _len; _i++) {
-      type = _ref1[_i];
+    var source, type, _i, _j, _len, _len1, _ref, _ref1, _ref2;
+    sources = [];
+    _ref = ['ajax', 'elements', 'document', 'eventLag'];
+    for (_i = 0, _len = _ref.length; _i < _len; _i++) {
+      type = _ref[_i];
       if (options[type] !== false) {
-        sources.push(new ELEMENT_KEYS[type](options[type]));
+        sources.push(new SOURCE_KEYS[type](options[type]));
       }
+    }
+    _ref2 = (_ref1 = options.extraSources) != null ? _ref1 : [];
+    for (_j = 0, _len1 = _ref2.length; _j < _len1; _j++) {
+      source = _ref2[_j];
+      sources.push(new source(options));
     }
     bar = new Bar;
     scalers = [];
@@ -501,7 +555,7 @@
     return Pace.go();
   };
 
-  Page.go = function() {
+  Pace.go = function() {
     bar.render();
     cancelAnimation = false;
     return animation = runAnimation(function(frameTime, enqueueNextFrame) {
